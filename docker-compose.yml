@@ -1,0 +1,59 @@
+version: '3.8'
+
+services:
+  app:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/finelo_quiz
+      - REDIS_URL=redis://redis:6379/0
+      - DEBUG=true
+    depends_on:
+      - db
+      - redis
+    volumes:
+      - .:/app
+    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+
+  db:
+    image: postgres:15
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+      POSTGRES_DB: finelo_quiz
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./init.sql:/docker-entrypoint-initdb.d/init.sql
+
+  redis:
+    image: redis:7-alpine
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis_data:/data
+
+  # LocalStack for local S3 testing
+  localstack:
+    image: localstack/localstack:3.8.1
+    ports:
+      - "4566:4566"
+    environment:
+      - SERVICES=s3
+      - AWS_DEFAULT_REGION=us-east-1
+      - AWS_ACCESS_KEY_ID=test
+      - AWS_SECRET_ACCESS_KEY=test
+      - DEBUG=1
+      - DOCKER_HOST=unix:///var/run/docker.sock
+      - LOCALSTACK_HOST=localhost
+    volumes:
+      - "/var/run/docker.sock:/var/run/docker.sock"
+      - localstack_data:/var/lib/localstack
+    restart: unless-stopped
+
+volumes:
+  postgres_data:
+  redis_data:
+  localstack_data: 
