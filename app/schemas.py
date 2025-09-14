@@ -118,7 +118,7 @@ class QuestionStatsResponse(BaseSchema):
     total_attempts: int
     total_correct: int
     correctness_rate: float = Field(..., description="Percentage of correct answers")
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
     @classmethod
     def from_orm_with_rate(cls, stats):
@@ -138,7 +138,7 @@ class QuizStatsResponse(BaseSchema):
     total_submissions: int
     avg_score: float
     question_stats: List[QuestionStatsResponse] = []
-    updated_at: datetime
+    updated_at: Optional[datetime] = None
 
 
 # === Error Schemas ===
@@ -219,6 +219,17 @@ class SubmitAnswerResponse(BaseSchema):
     question_id: uuid.UUID
     is_correct: bool
     answered_at: datetime
+    
+
+class QuestionAnswerStats(BaseSchema):
+    total_attempts: int
+    total_correct: int
+    correctness_rate: float
+    better_than_percent: float
+
+
+class SubmitAnswerWithStatsResponse(SubmitAnswerResponse):
+    question_stats: QuestionAnswerStats
 
 
 class SubmitAttemptResponse(BaseSchema):
@@ -228,6 +239,8 @@ class SubmitAttemptResponse(BaseSchema):
     total_correct: int
     score: int
     award_amount: int
+    average_score: float
+    better_than_average_percent: Optional[float] = None
 
 
 # === Balance Schemas ===
@@ -256,6 +269,9 @@ class AttemptListItemResponse(BaseSchema):
     correct_answers: int
     total_questions: int
     award_amount: int
+    score: int
+    average_score: float
+    better_than_average_percent: Optional[float] = None
 
 
 class PaginatedAttemptsResponse(BaseSchema):

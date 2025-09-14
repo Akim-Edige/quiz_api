@@ -56,8 +56,7 @@ async def get_quiz(
     "/{quiz_id}/stats",
     response_model=QuizStatsResponse,
     responses={
-        404: {"model": ErrorResponse, "description": "Quiz not found"},
-        400: {"model": ErrorResponse, "description": "Invalid quiz ID format"}
+        404: {"model": ErrorResponse, "description": "Quiz not found"}
     },
     summary="Get quiz statistics",
     description="Get quiz performance statistics including question correctness rates and overall scores. "
@@ -75,19 +74,13 @@ async def get_quiz_stats(
     - Per-question correctness rates
     - Data for percentile calculations
     """
-    try:
-        stats = await quiz_service.get_quiz_stats(db, quiz_id)
-        if not stats:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Quiz with ID {quiz_id} not found"
-            )
-        return stats
-    except ValueError:
+    stats = await quiz_service.get_quiz_stats(db, quiz_id)
+    if not stats:
         raise HTTPException(
-            status_code=400,
-            detail="Invalid quiz ID format"
+            status_code=404,
+            detail=f"Quiz with ID {quiz_id} not found"
         )
+    return stats
 
 
 @router.get(

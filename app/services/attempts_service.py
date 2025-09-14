@@ -80,6 +80,39 @@ class AttemptsService:
         award_rows = (await session.execute(award_stmt)).all()
         award_by_attempt = {row[0]: int(row[1] or 0) for row in award_rows}
 
+        # Average score per quiz (derived like in submit/stats)
+        from sqlalchemy import case
+        avg_by_quiz: dict[uuid.UUID, float] = {}
+        if quiz_ids:
+            # total_submissions per quiz
+            subs_rows = (await session.execute(
+                select(Attempt.quiz_id, func.count().label("subs"))
+                .where(Attempt.quiz_id.in_(quiz_ids))
+                .where(Attempt.submitted_at.is_not(None))
+                .group_by(Attempt.quiz_id)
+            )).all()
+            subs_by_quiz = {row[0]: int(row[1]) for row in subs_rows}
+
+            # total questions per quiz already computed: total_by_quiz
+
+            # correct totals per quiz
+            corr_rows = (await session.execute(
+                select(Attempt.quiz_id, func.coalesce(func.sum(case((AttemptAnswer.is_correct.is_(True), 1), else_=0)), 0))
+                .select_from(Attempt)
+                .join(AttemptAnswer, AttemptAnswer.attempt_id == Attempt.id, isouter=True)
+                .where(Attempt.quiz_id.in_(quiz_ids))
+                .where(Attempt.submitted_at.is_not(None))
+                .group_by(Attempt.quiz_id)
+            )).all()
+            corr_by_quiz = {row[0]: int(row[1] or 0) for row in corr_rows}
+
+            for qid in quiz_ids:
+                subs = subs_by_quiz.get(qid, 0)
+                tq = total_by_quiz.get(qid, 0)
+                corr = corr_by_quiz.get(qid, 0)
+                avg = (corr / (subs * tq) * 100.0) if subs > 0 and tq > 0 else 0.0
+                avg_by_quiz[qid] = float(round(avg, 2))
+
         return items, total, correct_by_attempt, total_by_quiz, award_by_attempt
 
     async def submit_answer(
@@ -88,7 +121,7 @@ class AttemptsService:
         attempt_id: uuid.UUID,
         question_id: uuid.UUID,
         answer_payload: dict
-    ) -> AttemptAnswer:
+    ) -> tuple[AttemptAnswer, int, int, float, float]:
         # Load question with required relations
         question_stmt = (
             select(Question)
@@ -124,17 +157,32 @@ class AttemptsService:
             existing.answer = answer_payload
             existing.is_correct = is_correct
             await session.flush()
-            return existing
+            ans_obj = existing
+        else:
+            ans_obj = AttemptAnswer(
+                attempt_id=attempt_id,
+                question_id=question_id,
+                answer=answer_payload,
+                is_correct=is_correct,
+            )
+            session.add(ans_obj)
+            await session.flush()
 
-        ans = AttemptAnswer(
-            attempt_id=attempt_id,
-            question_id=question_id,
-            answer=answer_payload,
-            is_correct=is_correct,
-        )
-        session.add(ans)
-        await session.flush()
-        return ans
+        # Compute per-question stats for user feedback
+        qs = await session.get(QuestionStats, question_id)
+        if qs:
+            total_attempts = int(qs.total_attempts or 0)
+            total_correct = int(qs.total_correct or 0)
+            correctness_rate = round((total_correct / total_attempts * 100) if total_attempts > 0 else 0.0, 2)
+            # Better than percent: if correct, user is better than (100 - correctness_rate) percent; if wrong, 0
+            better_than = round(100.0 - correctness_rate, 2) if is_correct else 0.0
+        else:
+            total_attempts = 0
+            total_correct = 0
+            correctness_rate = 0.0
+            better_than = 0.0
+
+        return ans_obj, total_attempts, total_correct, correctness_rate, better_than
 
     async def submit_attempt(self, session: AsyncSession, attempt_id: uuid.UUID) -> Tuple[int, int, int, int, datetime]:
         # Mark submitted and compute score; perform awarding
@@ -143,7 +191,8 @@ class AttemptsService:
             raise ValueError("Attempt not found")
         already_submitted = attempt.submitted_at is not None
         if already_submitted:
-            submitted_at = attempt.submitted_at
+            # Per requirements, do not allow resubmission
+            raise ValueError("Attempt already submitted")
         else:
             attempt.submitted_at = datetime.utcnow()
             await session.flush()
@@ -154,7 +203,11 @@ class AttemptsService:
         ans_list = (await session.execute(answers_stmt)).scalars().all()
         total_answered = len(ans_list)
         total_correct = sum(1 for a in ans_list if a.is_correct)
-        score = total_correct * 100
+        # Compute total number of questions in this quiz to derive percentage score
+        total_questions_stmt = select(func.count()).select_from(Question).where(Question.quiz_id == attempt.quiz_id)
+        total_questions = (await session.execute(total_questions_stmt)).scalar_one() or 0
+        # Avoid division by zero; if quiz has zero questions, score is 0
+        score = int(round((total_correct / total_questions) * 100)) if total_questions > 0 else 0
 
         if not already_submitted:
             # Update stats (upsert-like)
@@ -171,7 +224,7 @@ class AttemptsService:
             if not qstats:
                 qstats = QuizStats(quiz_id=attempt.quiz_id, total_submissions=0, avg_score=0)
                 session.add(qstats)
-            # naive rolling average
+            # naive rolling average of percentage scores
             n = (qstats.total_submissions or 0)
             qstats.avg_score = ((float(qstats.avg_score) * n) + score) / (n + 1)
             qstats.total_submissions = n + 1
@@ -187,7 +240,45 @@ class AttemptsService:
             except Exception:
                 pass
 
-        return total_answered, total_correct, score, award_amount, submitted_at
+        # Average and relative performance
+        # Derive average score from submitted attempts and correct answers
+        # total_submissions
+        total_submissions = (await session.execute(
+            select(func.count()).select_from(Attempt)
+            .where(Attempt.quiz_id == attempt.quiz_id)
+            .where(Attempt.submitted_at.is_not(None))
+        )).scalar_one() or 0
+        # total questions
+        total_questions_stmt = select(func.count()).select_from(Question).where(Question.quiz_id == attempt.quiz_id)
+        total_questions_final = (await session.execute(total_questions_stmt)).scalar_one() or 0
+        # sum of correct answers across submitted attempts
+        from sqlalchemy import case
+        correct_total = (await session.execute(
+            select(func.coalesce(func.sum(case((AttemptAnswer.is_correct.is_(True), 1), else_=0)), 0))
+            .select_from(AttemptAnswer)
+            .join(Attempt, Attempt.id == AttemptAnswer.attempt_id)
+            .where(Attempt.quiz_id == attempt.quiz_id)
+            .where(Attempt.submitted_at.is_not(None))
+        )).scalar_one() or 0
+        average_score = 0.0
+        if total_submissions > 0 and total_questions_final > 0:
+            average_score = (correct_total / (total_submissions * total_questions_final)) * 100.0
+
+        # Sync quiz_stats to derived values
+        qstats_row = await session.get(QuizStats, attempt.quiz_id)
+        if not qstats_row:
+            qstats_row = QuizStats(quiz_id=attempt.quiz_id, total_submissions=0, avg_score=0)
+            session.add(qstats_row)
+            await session.flush()
+        qstats_row.total_submissions = total_submissions
+        qstats_row.avg_score = average_score
+
+        better_than_avg = None
+        if score > average_score:
+            # absolute difference in percentage points
+            better_than_avg = round(score - float(average_score), 2)
+
+        return total_answered, total_correct, score, award_amount, submitted_at, float(round(average_score, 2)), better_than_avg
 
     async def _award_for_attempt(
         self,

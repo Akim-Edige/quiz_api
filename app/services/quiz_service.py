@@ -2,7 +2,7 @@ import uuid
 from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
-from sqlalchemy import select, and_
+from sqlalchemy import select, and_, func
 
 from app.models import (
     Quiz, QuizI18n, Question, QuestionI18n, 
@@ -240,7 +240,10 @@ class QuizService:
         session: AsyncSession, 
         quiz_id: uuid.UUID
     ) -> Optional[QuizStatsResponse]:
-        """Get quiz statistics with caching"""
+        """Get quiz statistics with caching
+        Computes average score as percentage of total quiz questions over submitted attempts,
+        and per-question correctness from attempt answers to ensure consistency.
+        """
         quiz_id_str = str(quiz_id)
         
         # Try cache first
@@ -248,50 +251,115 @@ class QuizService:
         if cached_stats:
             return QuizStatsResponse(**cached_stats)
         
-        # Fetch from database
-        quiz_stats_query = select(QuizStats).where(QuizStats.quiz_id == quiz_id)
-        quiz_stats_result = await session.execute(quiz_stats_query)
-        quiz_stats = quiz_stats_result.scalar_one_or_none()
+        # Verify quiz exists
+        quiz_exists = await session.execute(select(Quiz.id).where(Quiz.id == quiz_id))
+        if not quiz_exists.scalar_one_or_none():
+            return None
         
-        if not quiz_stats:
-            # Return empty stats if none exist
-            quiz_stats_data = QuizStatsResponse(
-                quiz_id=quiz_id,
-                total_submissions=0,
-                avg_score=0.0,
-                question_stats=[],
-                updated_at=None
+        # Total questions for this quiz
+        total_questions = (await session.execute(
+            select(func.count()).select_from(Question).where(Question.quiz_id == quiz_id)
+        )).scalar_one() or 0
+        
+        # Submitted attempts count
+        total_submissions = (await session.execute(
+            select(func.count()).select_from(__import__('app.models').models.Attempt)
+            .where(__import__('app.models').models.Attempt.quiz_id == quiz_id)
+            .where(__import__('app.models').models.Attempt.submitted_at.is_not(None))
+        )).scalar_one() or 0
+        
+        # Average score across attempts as percent of total questions
+        # Get per-attempt correct counts (including 0 for attempts with no correct answers)
+        Attempt = __import__('app.models').models.Attempt
+        AttemptAnswer = __import__('app.models').models.AttemptAnswer
+        from sqlalchemy import case
+        per_attempt_correct = (await session.execute(
+            select(
+                Attempt.id,
+                func.coalesce(
+                    func.sum(case((AttemptAnswer.is_correct.is_(True), 1), else_=0)),
+                    0
+                ).label("correct_count")
             )
+            .select_from(Attempt)
+            .join(AttemptAnswer, AttemptAnswer.attempt_id == Attempt.id, isouter=True)
+            .where(Attempt.quiz_id == quiz_id)
+            .where(Attempt.submitted_at.is_not(None))
+            .group_by(Attempt.id)
+        )).all()
+        
+        if total_submissions > 0 and total_questions > 0:
+            scores = [(row[1] or 0) / total_questions * 100.0 for row in per_attempt_correct]
+            avg_score = sum(scores) / len(scores) if scores else 0.0
         else:
-            # Get question stats for this quiz
-            question_stats_query = (
-                select(QuestionStats)
-                .join(Question, QuestionStats.question_id == Question.id)
-                .where(Question.quiz_id == quiz_id)
-            )
-            question_stats_result = await session.execute(question_stats_query)
-            question_stats = question_stats_result.scalars().all()
+            avg_score = 0.0
+        
+        # Compute updated_at for quiz: prefer stored aggregate timestamp if present, else latest submitted_at
+        quiz_stats_row = (await session.execute(select(QuizStats).where(QuizStats.quiz_id == quiz_id))).scalar_one_or_none()
+        max_submit_ts = (await session.execute(
+            select(func.max(Attempt.submitted_at))
+            .where(Attempt.quiz_id == quiz_id)
+            .where(Attempt.submitted_at.is_not(None))
+        )).scalar_one_or_none()
+        quiz_updated_at = quiz_stats_row.updated_at if quiz_stats_row and quiz_stats_row.updated_at else max_submit_ts
+        
+        # Per-question stats from answers on submitted attempts
+        question_rows = (await session.execute(
+            select(Question.id).where(Question.quiz_id == quiz_id)
+        )).scalars().all()
+        question_ids = list(question_rows)
+        question_stats_list = []
+        if question_ids:
+            qa_counts = (await session.execute(
+                select(AttemptAnswer.question_id,
+                       func.count().label('total'),
+                       func.count().filter(AttemptAnswer.is_correct.is_(True)).label('correct'))
+                .select_from(AttemptAnswer)
+                .join(Attempt, Attempt.id == AttemptAnswer.attempt_id)
+                .where(Attempt.quiz_id == quiz_id)
+                .where(Attempt.submitted_at.is_not(None))
+                .where(AttemptAnswer.question_id.in_(question_ids))
+                .group_by(AttemptAnswer.question_id)
+            )).all()
+            by_q = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in qa_counts}
+            # latest answered_at per question
+            latest_answered = (await session.execute(
+                select(AttemptAnswer.question_id, func.max(AttemptAnswer.answered_at))
+                .select_from(AttemptAnswer)
+                .join(Attempt, Attempt.id == AttemptAnswer.attempt_id)
+                .where(Attempt.quiz_id == quiz_id)
+                .where(Attempt.submitted_at.is_not(None))
+                .where(AttemptAnswer.question_id.in_(question_ids))
+                .group_by(AttemptAnswer.question_id)
+            )).all()
+            latest_by_q = {row[0]: row[1] for row in latest_answered}
+            # stored question stats updated_at (if any)
+            stored_qstats = (await session.execute(
+                select(QuestionStats.question_id, QuestionStats.updated_at)
+                .where(QuestionStats.question_id.in_(question_ids))
+            )).all()
+            stored_updated_by_q = {row[0]: row[1] for row in stored_qstats}
             
-            question_stats_list = [
-                {
-                    "question_id": str(stat.question_id),
-                    "total_attempts": stat.total_attempts,
-                    "total_correct": stat.total_correct,
-                    "correctness_rate": round(
-                        (stat.total_correct / stat.total_attempts * 100) if stat.total_attempts > 0 else 0, 2
-                    ),
-                    "updated_at": stat.updated_at
-                }
-                for stat in question_stats
-            ]
-            
-            quiz_stats_data = QuizStatsResponse(
-                quiz_id=quiz_stats.quiz_id,
-                total_submissions=quiz_stats.total_submissions,
-                avg_score=float(quiz_stats.avg_score),
-                question_stats=question_stats_list,
-                updated_at=quiz_stats.updated_at
-            )
+            for qid in question_ids:
+                total = by_q.get(qid, (0, 0))[0]
+                correct = by_q.get(qid, (0, 0))[1]
+                rate = round((correct / total * 100.0) if total > 0 else 0.0, 2)
+                q_updated = stored_updated_by_q.get(qid) or latest_by_q.get(qid)
+                question_stats_list.append({
+                    "question_id": str(qid),
+                    "total_attempts": total,
+                    "total_correct": correct,
+                    "correctness_rate": rate,
+                    "updated_at": q_updated
+                })
+        
+        quiz_stats_data = QuizStatsResponse(
+            quiz_id=quiz_id,
+            total_submissions=total_submissions,
+            avg_score=round(float(avg_score), 2),
+            question_stats=question_stats_list,
+            updated_at=quiz_updated_at
+        )
         
         # Cache the result
         await cache.cache_quiz_stats(quiz_id_str, quiz_stats_data.model_dump())
