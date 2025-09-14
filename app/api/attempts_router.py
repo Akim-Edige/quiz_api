@@ -5,7 +5,7 @@ from sqlalchemy.ext.asyncio import AsyncSession
 
 from app.database import get_db
 from app.services.attempts_service import attempts_service
-from app.models import BalanceAccount, BalanceLedger
+from app.models import BalanceAccount, BalanceLedger, Attempt
 from app.schemas import (
     CreateAttemptRequest, CreateAttemptResponse,
     SubmitAnswerRequest, SubmitAnswerResponse,
@@ -69,8 +69,15 @@ async def submit_attempt(
     db: AsyncSession = Depends(get_db),
     x_user_id: Optional[str] = Header(None)
 ):
-    parse_user_id(x_user_id)
+    user_id = parse_user_id(x_user_id)
     try:
+        # Authorization check: attempt must belong to this user
+        attempt = await db.get(Attempt, attempt_id)
+        if not attempt:
+            raise HTTPException(status_code=404, detail="Attempt not found")
+        if attempt.user_id != user_id:
+            raise HTTPException(status_code=403, detail="Forbidden: attempt does not belong to this user")
+
         total_answered, total_correct, score, award, submitted_at = await attempts_service.submit_attempt(db, attempt_id)
         await db.commit()
         return SubmitAttemptResponse(
@@ -81,6 +88,9 @@ async def submit_attempt(
             score=score,
             award_amount=award,
         )
+    except HTTPException:
+        await db.rollback()
+        raise
     except ValueError as e:
         await db.rollback()
         raise HTTPException(status_code=400, detail=str(e))
