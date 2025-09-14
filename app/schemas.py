@@ -242,4 +242,22 @@ class LedgerEntryResponse(BaseSchema):
 class BalanceResponse(BaseSchema):
     user_id: uuid.UUID
     current_balance: int
-    recent_ledger: List[LedgerEntryResponse] = [] 
+    recent_ledger: List[LedgerEntryResponse] = []
+
+
+# === Attempts Listing ===
+
+class AttemptListItemResponse(BaseSchema):
+    attempt_id: uuid.UUID
+    quiz_id: uuid.UUID
+    started_at: datetime
+    submitted_at: Optional[datetime] = None
+    status: str
+    correct_answers: int
+    total_questions: int
+    award_amount: int
+
+
+class PaginatedAttemptsResponse(BaseSchema):
+    items: List[AttemptListItemResponse]
+    meta: PaginationMeta 

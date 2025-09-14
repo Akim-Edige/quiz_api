@@ -12,6 +12,7 @@ from app.models import (
 )
 from app.services.quiz_service import evaluate_answer
 from app.cache import cache
+from sqlalchemy import func, desc
 
 
 class AttemptsService:
@@ -24,6 +25,62 @@ class AttemptsService:
         session.add(attempt)
         await session.flush()
         return attempt
+
+    async def list_attempts(
+        self,
+        session: AsyncSession,
+        user_id: uuid.UUID,
+        page: int = 1,
+        size: int = 20
+    ) -> tuple[list[Attempt], int, dict[uuid.UUID, int], dict[uuid.UUID, int], dict[uuid.UUID, int]]:
+        offset = (page - 1) * size
+        # Order: most recent submitted_at; if NULL use started_at
+        order_expr = desc(func.coalesce(Attempt.submitted_at, Attempt.started_at))
+        # Count
+        count_stmt = select(func.count()).select_from(Attempt).where(Attempt.user_id == user_id)
+        total = (await session.execute(count_stmt)).scalar_one()
+        # Page
+        stmt = (
+            select(Attempt)
+            .where(Attempt.user_id == user_id)
+            .order_by(order_expr)
+            .offset(offset)
+            .limit(size)
+        )
+        items = (await session.execute(stmt)).scalars().all()
+        if not items:
+            return items, total, {}, {}, {}
+
+        attempt_ids = [a.id for a in items]
+        quiz_ids = list({a.quiz_id for a in items})
+
+        # Correct counts per attempt
+        ans_stmt = (
+            select(AttemptAnswer.attempt_id, func.count().filter(AttemptAnswer.is_correct.is_(True)).label("correct"))
+            .where(AttemptAnswer.attempt_id.in_(attempt_ids))
+            .group_by(AttemptAnswer.attempt_id)
+        )
+        ans_rows = (await session.execute(ans_stmt)).all()
+        correct_by_attempt = {row[0]: int(row[1] or 0) for row in ans_rows}
+
+        # Total questions per quiz
+        q_stmt = (
+            select(Question.quiz_id, func.count().label("total"))
+            .where(Question.quiz_id.in_(quiz_ids))
+            .group_by(Question.quiz_id)
+        )
+        q_rows = (await session.execute(q_stmt)).all()
+        total_by_quiz = {row[0]: int(row[1]) for row in q_rows}
+
+        # Award amount per attempt
+        award_stmt = (
+            select(QuizAward.attempt_id, QuizAward.amount)
+            .where(QuizAward.user_id == user_id, QuizAward.attempt_id.in_(attempt_ids))
+        )
+        award_rows = (await session.execute(award_stmt)).all()
+        award_by_attempt = {row[0]: int(row[1] or 0) for row in award_rows}
+
+        return items, total, correct_by_attempt, total_by_quiz, award_by_attempt
 
     async def submit_answer(
         self,
@@ -147,7 +204,7 @@ class AttemptsService:
         # Gather correct answers for this attempt
         answers_stmt = select(AttemptAnswer).where(
             AttemptAnswer.attempt_id == attempt_id,
-            AttemptAnswer.is_correct == True  # noqa: E712
+            AttemptAnswer.is_correct == True
         )
         correct_answers = (await session.execute(answers_stmt)).scalars().all()
 

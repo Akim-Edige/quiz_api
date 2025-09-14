@@ -9,7 +9,8 @@ from app.models import BalanceAccount, BalanceLedger
 from app.schemas import (
     CreateAttemptRequest, CreateAttemptResponse,
     SubmitAnswerRequest, SubmitAnswerResponse,
-    SubmitAttemptResponse, BalanceResponse, LedgerEntryResponse
+    SubmitAttemptResponse, BalanceResponse, LedgerEntryResponse,
+    PaginatedAttemptsResponse
 )
 
 router = APIRouter(prefix="/attempts", tags=["attempts"])
@@ -108,4 +109,44 @@ async def get_my_balance(
         recent_ledger=[
             LedgerEntryResponse(id=i.id, delta=i.delta, reason=i.reason, created_at=i.created_at) for i in items
         ]
-    ) 
+    )
+
+
+@router.get("/me", summary="List my attempts", response_model=PaginatedAttemptsResponse)
+async def list_my_attempts(
+    page: int = 1,
+    size: int = 20,
+    db: AsyncSession = Depends(get_db),
+    x_user_id: Optional[str] = Header(None)
+):
+    user_id = parse_user_id(x_user_id)
+    if page < 1 or size < 1 or size > 100:
+        raise HTTPException(status_code=400, detail="Invalid pagination parameters")
+    # Fetch aggregates
+    items, total, correct_by_attempt, total_by_quiz, award_by_attempt = await attempts_service.list_attempts(db, user_id, page, size)
+    resp_items = []
+    for a in items:
+        status = "Submitted" if a.submitted_at else "In progress"
+        correct = correct_by_attempt.get(a.id, 0)
+        total_q = total_by_quiz.get(a.quiz_id, 0)
+        award = award_by_attempt.get(a.id, 0)
+        resp_items.append({
+            "attempt_id": a.id,
+            "quiz_id": a.quiz_id,
+            "started_at": a.started_at,
+            "submitted_at": a.submitted_at,
+            "status": status,
+            "correct_answers": correct,
+            "total_questions": total_q,
+            "award_amount": award,
+        })
+    pages = (total + size - 1) // size
+    return {
+        "items": resp_items,
+        "meta": {
+            "total": total,
+            "page": page,
+            "size": size,
+            "pages": pages
+        }
+    } 
