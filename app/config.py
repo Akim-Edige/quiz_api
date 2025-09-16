@@ -17,7 +17,7 @@ class Settings(BaseSettings):
     s3_bucket: str = "finelo-quiz-assets"
     
     # CDN
-    cdn_domain: Optional[str] = None
+    cdn_domain: Optional[str] = "http://localhost:4566/finelo-quiz-assets/"
     
     # Cache settings
     quiz_cache_ttl: int = 3600  # 1 hour

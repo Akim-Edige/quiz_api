@@ -1,5 +1,5 @@
 import boto3
-from botocore.exceptions import ClientError
+from botocore.exceptions import ClientError, NoCredentialsError
 from typing import Optional
 from urllib.parse import urljoin
 from app.config import settings
@@ -35,7 +35,7 @@ class S3Service:
                 ExpiresIn=expiration
             )
             return response
-        except ClientError:
+        except (ClientError, NoCredentialsError):
             return None
     
     def get_public_url(self, s3_bucket: str, s3_key: str) -> str:
@@ -46,7 +46,14 @@ class S3Service:
             return f"https://{s3_bucket}.s3.{settings.aws_region}.amazonaws.com/{s3_key}"
     
     def get_asset_url(self, s3_bucket: str, s3_key: str, is_private: bool = True) -> str:
-        """Get appropriate URL for asset (presigned for private, public for CDN)"""
+        """Get appropriate URL for asset.
+        If a CDN domain is configured, always return the CDN/public URL.
+        Otherwise, use presigned URLs for private access when possible and fall back to public URL.
+        """
+        # Prefer CDN/public URL when configured (useful for LocalStack/local dev)
+        if settings.cdn_domain:
+            return self.get_public_url(s3_bucket, s3_key)
+        
         if is_private:
             presigned_url = self.generate_presigned_url(s3_bucket, s3_key)
             return presigned_url or self.get_public_url(s3_bucket, s3_key)
