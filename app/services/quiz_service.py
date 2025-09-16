@@ -13,6 +13,7 @@ from app.models import (
 from app.schemas import LocalizedQuizResponse, LocalizedQuestionResponse, QuizStatsResponse
 from app.cache import cache
 from app.s3_utils import s3_service
+from app.config import settings
 
 
 class QuizService:
@@ -172,9 +173,12 @@ class QuizService:
             })
         return gaps
     
-    async def _build_matching_pairs(self, matching_pairs: List[MatchingPair], locale: str) -> List[Dict[str, Any]]:
-        """Build matching pairs for matching questions"""
-        pairs = []
+    async def _build_matching_pairs(self, matching_pairs: List[MatchingPair], locale: str) -> Dict[str, List[Dict[str, Any]]]:
+        """Build matching items for matching questions without revealing correct pairs.
+        Returns a dict with separate left and right item lists, each item having an opaque side-specific id.
+        """
+        left_items: List[Dict[str, Any]] = []
+        right_items: List[Dict[str, Any]] = []
         for pair in matching_pairs:
             left_content = await self._build_side_content(
                 pair.left_kind, pair.left_text, pair.left_asset, locale
@@ -182,13 +186,16 @@ class QuizService:
             right_content = await self._build_side_content(
                 pair.right_kind, pair.right_text, pair.right_asset, locale
             )
-            
-            pairs.append({
-                "id": str(pair.id),
-                "left": left_content,
-                "right": right_content
+
+            left_items.append({
+                "id": make_matching_side_id(pair.id, "L"),
+                **left_content
             })
-        return pairs
+            right_items.append({
+                "id": make_matching_side_id(pair.id, "R"),
+                **right_content
+            })
+        return {"left_items": left_items, "right_items": right_items}
     
     async def _build_side_content(
         self, 
@@ -458,11 +465,43 @@ async def evaluate_fill_gap(question: Question, submitted_values_by_gap: dict) -
 
 
 async def evaluate_matching(question: Question, submitted_pairs: list[dict]) -> bool:
-    # submitted_pairs: list of {left: str, right: str} where values are IDs of MatchingPair sides joined as stored ids
-    # We model correctness as set equality of correct pairs IDs
-    correct_pairs = {str(p.id) for p in question.matching_pairs}
-    submitted = {p.get("pair_id") for p in (submitted_pairs or []) if p.get("pair_id")}
-    return submitted == correct_pairs
+    # submitted_pairs: list of {left_id: str, right_id: str}
+    # Build mapping of valid left->right ids from DB
+    valid_map: dict[str, str] = {}
+    left_ids: set[str] = set()
+    right_ids: set[str] = set()
+    for p in question.matching_pairs:
+        left_id = make_matching_side_id(p.id, "L")
+        right_id = make_matching_side_id(p.id, "R")
+        valid_map[left_id] = right_id
+        left_ids.add(left_id)
+        right_ids.add(right_id)
+
+    # Normalize submitted
+    seen_left: set[str] = set()
+    seen_right: set[str] = set()
+    if not submitted_pairs:
+        return False
+    if len(submitted_pairs) != len(question.matching_pairs):
+        return False
+
+    for pair in submitted_pairs:
+        l = pair.get("left_id")
+        r = pair.get("right_id")
+        if not l or not r:
+            return False
+        if l in seen_left or r in seen_right:
+            return False
+        seen_left.add(l)
+        seen_right.add(r)
+        expected_r = valid_map.get(l)
+        if expected_r is None:
+            return False
+        if r != expected_r:
+            return False
+
+    # All pairs must be correct for full credit
+    return True
 
 
 async def evaluate_answer(question: Question, normalized_answer: dict) -> bool:
@@ -473,3 +512,13 @@ async def evaluate_answer(question: Question, normalized_answer: dict) -> bool:
     if question.qtype == QuestionType.MATCHING:
         return await evaluate_matching(question, normalized_answer.get("pairs", []))
     return False 
+
+
+def make_matching_side_id(pair_id: uuid.UUID, side_label: str) -> str:
+    """Create an opaque, stable ID for a matching side that does not reveal the pair relation.
+    Uses a salted UUID5 derived from (salt, pair_id, side_label).
+    side_label should be either "L" or "R".
+    """
+    import uuid as _uuid
+    seed = f"{settings.matching_side_id_salt}:{pair_id}:{side_label}"
+    return _uuid.uuid5(_uuid.NAMESPACE_URL, seed).hex 

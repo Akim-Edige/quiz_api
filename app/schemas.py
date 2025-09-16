@@ -168,7 +168,7 @@ class LocalizedQuestionResponse(BaseSchema):
     # Type-specific content
     choice_options: Optional[List[Dict[str, Any]]] = None  # For single/multi choice
     fill_gaps: Optional[List[Dict[str, Any]]] = None       # For fill-in-the-gap
-    matching_pairs: Optional[List[Dict[str, Any]]] = None  # For matching
+    matching_pairs: Optional[Dict[str, List[Dict[str, Any]]]] = None  # For matching: {left_items: [...], right_items: [...]} 
 
 
 class LocalizedQuizResponse(BaseSchema):

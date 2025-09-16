@@ -37,19 +37,13 @@ async def get_quiz(
     - Redis caching for assembled quiz content
     - CDN URLs for media assets
     """
-    try:
-        quiz = await quiz_service.get_quiz_by_id(db, quiz_id, locale)
-        if not quiz:
-            raise HTTPException(
-                status_code=404,
-                detail=f"Quiz with ID {quiz_id} not found"
-            )
-        return quiz
-    except ValueError:
+    quiz = await quiz_service.get_quiz_by_id(db, quiz_id, locale)
+    if not quiz:
         raise HTTPException(
-            status_code=400,
-            detail="Invalid quiz ID format"
+            status_code=404,
+            detail=f"Quiz with ID {quiz_id} not found"
         )
+    return quiz
 
 
 @router.get(
