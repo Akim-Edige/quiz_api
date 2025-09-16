@@ -201,6 +201,40 @@ class AttemptsService:
         # Load answers
         answers_stmt = select(AttemptAnswer).where(AttemptAnswer.attempt_id == attempt_id)
         ans_list = (await session.execute(answers_stmt)).scalars().all()
+
+        # Recompute correctness at submission time to ensure no partial credit for matching
+        if ans_list:
+            qids = [a.question_id for a in ans_list]
+            from app.models import Question, FillGap, ChoiceOption, MatchingPair
+            q_stmt = (
+                select(Question)
+                .options(
+                    selectinload(Question.choice_options),
+                    selectinload(Question.fill_gaps).selectinload(FillGap.answers),
+                    selectinload(Question.matching_pairs),
+                )
+                .where(Question.id.in_(qids))
+            )
+            q_rows = (await session.execute(q_stmt)).scalars().all()
+            by_qid = {q.id: q for q in q_rows}
+            for a in ans_list:
+                q = by_qid.get(a.question_id)
+                if q is None:
+                    a.is_correct = False
+                else:
+                    # Use strict evaluation for matching when scoring at submission
+                    from app.models import QuestionType
+                    from app.services.quiz_service import evaluate_matching_strict, evaluate_fill_gap, evaluate_single_or_multi_choice
+                    if q.qtype in [QuestionType.SINGLE_CHOICE, QuestionType.MULTI_CHOICE]:
+                        a.is_correct = await evaluate_single_or_multi_choice(q, a.answer.get("option_ids", []))
+                    elif q.qtype == QuestionType.FILL_GAP:
+                        a.is_correct = await evaluate_fill_gap(q, a.answer.get("gaps", {}))
+                    elif q.qtype == QuestionType.MATCHING:
+                        a.is_correct = await evaluate_matching_strict(q, a.answer.get("pairs", []))
+                    else:
+                        a.is_correct = False
+            await session.flush()
+
         total_answered = len(ans_list)
         total_correct = sum(1 for a in ans_list if a.is_correct)
         # Compute total number of questions in this quiz to derive percentage score

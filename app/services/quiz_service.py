@@ -482,8 +482,6 @@ async def evaluate_matching(question: Question, submitted_pairs: list[dict]) -> 
     seen_right: set[str] = set()
     if not submitted_pairs:
         return False
-    if len(submitted_pairs) != len(question.matching_pairs):
-        return False
 
     for pair in submitted_pairs:
         l = pair.get("left_id")
@@ -492,15 +490,45 @@ async def evaluate_matching(question: Question, submitted_pairs: list[dict]) -> 
             return False
         if l in seen_left or r in seen_right:
             return False
-        seen_left.add(l)
-        seen_right.add(r)
+        # Left/right must be known opaque ids
         expected_r = valid_map.get(l)
         if expected_r is None:
             return False
         if r != expected_r:
             return False
+        seen_left.add(l)
+        seen_right.add(r)
 
-    # All pairs must be correct for full credit
+    # All submitted pairs are correct so far
+    return True
+
+
+async def evaluate_matching_strict(question: Question, submitted_pairs: list[dict]) -> bool:
+    """Strict evaluation for scoring: requires all pairs submitted and all correct."""
+    # Build mapping of valid left->right ids
+    valid_map: dict[str, str] = {}
+    for p in question.matching_pairs:
+        valid_map[make_matching_side_id(p.id, "L")] = make_matching_side_id(p.id, "R")
+
+    if not submitted_pairs:
+        return False
+    if len(submitted_pairs) != len(question.matching_pairs):
+        return False
+
+    seen_left: set[str] = set()
+    seen_right: set[str] = set()
+    for pair in submitted_pairs:
+        l = pair.get("left_id")
+        r = pair.get("right_id")
+        if not l or not r:
+            return False
+        if l in seen_left or r in seen_right:
+            return False
+        expected_r = valid_map.get(l)
+        if expected_r is None or r != expected_r:
+            return False
+        seen_left.add(l)
+        seen_right.add(r)
     return True
 
 
