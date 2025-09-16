@@ -1,4 +1,4 @@
-from pydantic_settings import BaseSettings
+from pydantic_settings import BaseSettings, SettingsConfigDict
 from typing import Optional
 
 
@@ -38,8 +38,8 @@ class Settings(BaseSettings):
     quiz_payload_version: str = "v2"
     quiz_stats_version: str = "v2"
     
-    class Config:
-        env_file = ".env"
+    # Pydantic v2 settings config
+    model_config = SettingsConfigDict(env_file=".env")
 
 
 settings = Settings() 

@@ -1,7 +1,7 @@
 import uuid
 from datetime import datetime
 from typing import Optional, List, Dict, Any, Union
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, ConfigDict
 
 from app.models import QuizStatus, QuestionType, SideKind
 
@@ -9,8 +9,7 @@ from app.models import QuizStatus, QuestionType, SideKind
 # === Base Schemas ===
 
 class BaseSchema(BaseModel):
-    class Config:
-        from_attributes = True
+    model_config = ConfigDict(from_attributes=True)
 
 
 # === Quiz Schemas ===
@@ -108,7 +107,7 @@ class QuizDetailResponse(BaseSchema):
     created_at: datetime
     title: str
     description: Optional[str] = None
-    questions: List[QuestionResponse] = []
+    i18n: List[QuizI18nResponse] = []
 
 
 # === Stats Schemas ===

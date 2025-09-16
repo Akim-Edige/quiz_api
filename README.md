@@ -169,6 +169,34 @@ Re-run seeding:
 docker compose exec app python seed_runner.py
 ```
 
+## Testing
+- Ensure the stack is up (the API tests hit http://localhost:8000):
+```bash
+docker compose up -d
+```
+
+- Run tests from host:
+```bash
+pip install -r requirements.txt
+pytest -q
+```
+  - Optional env vars:
+    - `BASE_URL` (default `http://localhost:8000`) to point API tests elsewhere
+    - `TEST_USER_ID` (default `00000000-0000-0000-0000-000000000001`)
+
+- Or run tests inside the app container:
+```bash
+docker compose exec app pytest -q
+```
+
+- What’s covered:
+  - API: listing quizzes, get by id/slug, stats, attempts flow (create, answer, submit, balance, list)
+  - Unit: matching evaluation helpers (non-strict and strict)
+
+- Warnings:
+  - Pydantic v2 migration warnings resolved
+  - Asyncio deprecation noise is suppressed via `pytest.ini`
+
 ## Notes
 - Local assets are uploaded to LocalStack S3 and served via the configured `CDN_DOMAIN`.
 - In production, point `CDN_DOMAIN` to your CDN (e.g., CloudFront) with S3 as origin; the API will return CDN URLs.
@@ -177,5 +205,5 @@ docker compose exec app python seed_runner.py
 ## Tests
 Run the basic validation test locally (optional):
 ```bash
-python test_basic.py
+python tests/test_basic.py
 ``` 
