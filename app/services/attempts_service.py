@@ -4,6 +4,7 @@ from datetime import datetime
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy import select
 from sqlalchemy.orm import selectinload
+import logging
 
 from app.models import (
     Attempt, AttemptAnswer, Quiz, Question, FillGap,
@@ -13,6 +14,8 @@ from app.models import (
 from app.services.quiz_service import evaluate_answer
 from app.cache import cache
 from sqlalchemy import func, desc
+
+logger = logging.getLogger("app.attempts_service")
 
 
 class AttemptsService:
@@ -24,6 +27,7 @@ class AttemptsService:
         attempt = Attempt(user_id=user_id, quiz_id=quiz_id, locale=locale)
         session.add(attempt)
         await session.flush()
+        logger.info("Created attempt id=%s user=%s quiz=%s", str(attempt.id), str(user_id), str(quiz_id))
         return attempt
 
     async def list_attempts(
@@ -146,6 +150,10 @@ class AttemptsService:
 
         # Evaluate correctness
         is_correct = await evaluate_answer(question, answer_payload)
+        logger.debug(
+            "Evaluated answer attempt=%s question=%s qtype=%s correct=%s",
+            str(attempt_id), str(question_id), question.qtype, is_correct,
+        )
 
         # Upsert attempt answer (unique on attempt_id, question_id)
         existing_stmt = (
@@ -158,6 +166,7 @@ class AttemptsService:
             existing.is_correct = is_correct
             await session.flush()
             ans_obj = existing
+            logger.info("Updated answer id=%s attempt=%s correct=%s", str(ans_obj.id), str(attempt_id), is_correct)
         else:
             ans_obj = AttemptAnswer(
                 attempt_id=attempt_id,
@@ -167,6 +176,7 @@ class AttemptsService:
             )
             session.add(ans_obj)
             await session.flush()
+            logger.info("Created answer id=%s attempt=%s correct=%s", str(ans_obj.id), str(attempt_id), is_correct)
 
         # Compute per-question stats for user feedback
         qs = await session.get(QuestionStats, question_id)
@@ -242,6 +252,10 @@ class AttemptsService:
         total_questions = (await session.execute(total_questions_stmt)).scalar_one() or 0
         # Avoid division by zero; if quiz has zero questions, score is 0
         score = int(round((total_correct / total_questions) * 100)) if total_questions > 0 else 0
+        logger.info(
+            "Submitted attempt id=%s total_answered=%s total_correct=%s score=%s",
+            str(attempt_id), total_answered, total_correct, score,
+        )
 
         if not already_submitted:
             # Update stats (upsert-like)
@@ -312,6 +326,10 @@ class AttemptsService:
             # absolute difference in percentage points
             better_than_avg = round(score - float(average_score), 2)
 
+        logger.info(
+            "Attempt finalized id=%s award=%s average_score=%.2f better_than_delta=%s",
+            str(attempt_id), award_amount, float(round(average_score, 2)), better_than_avg,
+        )
         return total_answered, total_correct, score, award_amount, submitted_at, float(round(average_score, 2)), better_than_avg
 
     async def _award_for_attempt(
@@ -365,6 +383,7 @@ class AttemptsService:
             session.add(ledger)
 
         await session.flush()
+        logger.info("Award computed user=%s quiz=%s attempt=%s amount=%s", str(user_id), str(quiz_id), str(attempt_id), amount)
         return amount
 
 

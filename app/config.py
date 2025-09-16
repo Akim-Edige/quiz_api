@@ -28,13 +28,16 @@ class Settings(BaseSettings):
     api_version: str = "1.0.0"
     debug: bool = False
 
+    # Logging
+    log_level: str = "INFO"
+
     # Matching
     matching_side_id_salt: str = "finelo-quiz-matching-salt"
 
     # Caching payload versioning (bump to invalidate old schema caches)
     quiz_payload_version: str = "v2"
     quiz_stats_version: str = "v2"
-
+    
     class Config:
         env_file = ".env"
 

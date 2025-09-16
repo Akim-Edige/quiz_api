@@ -2,6 +2,9 @@ import json
 import redis.asyncio as redis
 from typing import Optional, Any, Dict
 from app.config import settings
+import logging
+
+logger = logging.getLogger("app.cache")
 
 
 class CacheService:
@@ -15,11 +18,13 @@ class CacheService:
             encoding="utf-8",
             decode_responses=True
         )
+        logger.info("Connected to Redis at %s", settings.redis_url)
     
     async def disconnect(self):
         """Close Redis connection"""
         if self.redis_client:
             await self.redis_client.close()
+            logger.info("Disconnected from Redis")
     
     async def get(self, key: str) -> Optional[Any]:
         """Get value from cache"""
@@ -29,9 +34,12 @@ class CacheService:
         try:
             value = await self.redis_client.get(key)
             if value:
+                logger.debug("Cache hit for key=%s", key)
                 return json.loads(value)
+            logger.debug("Cache miss for key=%s", key)
             return None
-        except Exception:
+        except Exception as e:
+            logger.exception("Cache get failed for key=%s: %s", key, e)
             return None
     
     async def set(self, key: str, value: Any, ttl: int = 3600) -> bool:
@@ -42,8 +50,10 @@ class CacheService:
         try:
             serialized_value = json.dumps(value, default=str)
             await self.redis_client.setex(key, ttl, serialized_value)
+            logger.debug("Cache set key=%s ttl=%s", key, ttl)
             return True
-        except Exception:
+        except Exception as e:
+            logger.exception("Cache set failed for key=%s: %s", key, e)
             return False
     
     async def delete(self, key: str) -> bool:
@@ -53,8 +63,10 @@ class CacheService:
         
         try:
             await self.redis_client.delete(key)
+            logger.debug("Cache delete key=%s", key)
             return True
-        except Exception:
+        except Exception as e:
+            logger.exception("Cache delete failed for key=%s: %s", key, e)
             return False
     
     async def delete_pattern(self, pattern: str) -> int:
@@ -64,10 +76,13 @@ class CacheService:
         
         try:
             keys = await self.redis_client.keys(pattern)
+            deleted = 0
             if keys:
-                return await self.redis_client.delete(*keys)
-            return 0
-        except Exception:
+                deleted = await self.redis_client.delete(*keys)
+            logger.info("Cache delete_pattern pattern=%s deleted=%s", pattern, deleted)
+            return deleted
+        except Exception as e:
+            logger.exception("Cache delete_pattern failed for pattern=%s: %s", pattern, e)
             return 0
     
     # Quiz-specific cache methods
@@ -90,7 +105,10 @@ class CacheService:
     async def cache_quiz(self, quiz_id: str, locale: str, quiz_data: Dict[str, Any]) -> bool:
         """Cache quiz content for specific locale"""
         key = self.get_quiz_cache_key(quiz_id, locale)
-        return await self.set(key, quiz_data, settings.quiz_cache_ttl)
+        ok = await self.set(key, quiz_data, settings.quiz_cache_ttl)
+        if ok:
+            logger.info("Cached quiz payload quiz_id=%s locale=%s", quiz_id, locale)
+        return ok
     
     async def invalidate_quiz_cache(self, quiz_id: str) -> int:
         """Invalidate all cached versions of a quiz (all locales and payload versions)"""
@@ -98,6 +116,7 @@ class CacheService:
         deleted = 0
         deleted += await self.delete_pattern(f"quiz:{quiz_id}:*")
         deleted += await self.delete_pattern(f"quiz:*:{quiz_id}:*")
+        logger.info("Invalidated quiz cache quiz_id=%s deleted=%s", quiz_id, deleted)
         return deleted
     
     async def get_cached_quiz_stats(self, quiz_id: str) -> Optional[Dict[str, Any]]:
@@ -108,13 +127,17 @@ class CacheService:
     async def cache_quiz_stats(self, quiz_id: str, stats_data: Dict[str, Any]) -> bool:
         """Cache quiz statistics"""
         key = self.get_quiz_stats_cache_key(quiz_id)
-        return await self.set(key, stats_data, settings.stats_cache_ttl)
+        ok = await self.set(key, stats_data, settings.stats_cache_ttl)
+        if ok:
+            logger.info("Cached quiz stats quiz_id=%s", quiz_id)
+        return ok
 
     async def invalidate_quiz_stats_cache(self, quiz_id: str) -> int:
         """Invalidate all cached versions of quiz stats"""
         deleted = 0
         deleted += await self.delete_pattern(f"quiz:stats:{quiz_id}")
         deleted += await self.delete_pattern(f"quiz:stats:*:{quiz_id}")
+        logger.info("Invalidated quiz stats cache quiz_id=%s deleted=%s", quiz_id, deleted)
         return deleted
 
 

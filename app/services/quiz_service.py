@@ -3,6 +3,7 @@ from typing import Optional, List, Dict, Any
 from sqlalchemy.ext.asyncio import AsyncSession
 from sqlalchemy.orm import selectinload, joinedload
 from sqlalchemy import select, and_, func
+import logging
 
 from app.models import (
     Quiz, QuizI18n, Question, QuestionI18n, 
@@ -14,6 +15,8 @@ from app.schemas import LocalizedQuizResponse, LocalizedQuestionResponse, QuizSt
 from app.cache import cache
 from app.s3_utils import s3_service
 from app.config import settings
+
+logger = logging.getLogger("app.quiz_service")
 
 
 class QuizService:
@@ -33,11 +36,14 @@ class QuizService:
         # Try cache first
         cached_quiz = await cache.get_cached_quiz(quiz_id_str, locale)
         if cached_quiz:
+            logger.debug("Quiz cache hit quiz_id=%s locale=%s", quiz_id_str, locale)
             return LocalizedQuizResponse(**cached_quiz)
+        logger.debug("Quiz cache miss quiz_id=%s locale=%s", quiz_id_str, locale)
         
         # Fetch from database with optimized queries
         quiz_data = await self._fetch_quiz_from_db(session, quiz_id, locale)
         if not quiz_data:
+            logger.warning("Quiz not found quiz_id=%s", quiz_id_str)
             return None
         
         # Cache the result
@@ -89,6 +95,7 @@ class QuizService:
         )
         questions_result = await session.execute(questions_query)
         questions = questions_result.scalars().all()
+        logger.debug("Fetched %s questions for quiz_id=%s", len(questions), str(quiz_id))
         
         # Build localized questions
         localized_questions = []
@@ -195,6 +202,7 @@ class QuizService:
                 "id": make_matching_side_id(pair.id, "R"),
                 **right_content
             })
+        logger.debug("Built matching pairs left=%s right=%s", len(left_items), len(right_items))
         return {"left_items": left_items, "right_items": right_items}
     
     async def _build_side_content(
@@ -213,9 +221,11 @@ class QuizService:
         else:  # IMAGE
             if asset:
                 asset_i18n = self._get_localized_content(asset.i18n, locale)
+                url = s3_service.get_asset_url(asset.s3_bucket, asset.s3_key)
+                logger.debug("Resolved asset URL key=%s url=%s", asset.s3_key, url)
                 return {
                     "type": "image",
-                    "url": s3_service.get_asset_url(asset.s3_bucket, asset.s3_key),
+                    "url": url,
                     "alt_text": asset_i18n.alt_text if asset_i18n else None,
                     "width": asset.width,
                     "height": asset.height,
@@ -256,7 +266,9 @@ class QuizService:
         # Try cache first
         cached_stats = await cache.get_cached_quiz_stats(quiz_id_str)
         if cached_stats:
+            logger.debug("Quiz stats cache hit quiz_id=%s", quiz_id_str)
             return QuizStatsResponse(**cached_stats)
+        logger.debug("Quiz stats cache miss quiz_id=%s", quiz_id_str)
         
         # Verify quiz exists
         quiz_exists = await session.execute(select(Quiz.id).where(Quiz.id == quiz_id))

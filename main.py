@@ -1,20 +1,35 @@
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
+import logging
+import sys
+import time
 
 from app.config import settings
 from app.cache import cache
 from app.api.quiz_router import router as quiz_router
 
 
+# Configure logging once at startup
+LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s - %(message)s"
+logging.basicConfig(
+    level=getattr(logging, (settings.log_level or "INFO").upper(), logging.INFO),
+    format=LOG_FORMAT,
+    stream=sys.stdout,
+)
+logger = logging.getLogger("app")
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Handle application startup and shutdown"""
     # Startup
+    logger.info("Starting up application")
     await cache.connect()
     yield
     # Shutdown
     await cache.disconnect()
+    logger.info("Shutting down application")
 
 
 app = FastAPI(
@@ -33,6 +48,25 @@ app.add_middleware(
     allow_methods=["GET", "POST", "PUT", "DELETE"],
     allow_headers=["*"],
 )
+
+
+# Simple request logging middleware
+@app.middleware("http")
+async def log_requests(request: Request, call_next):
+    start = time.perf_counter()
+    response = None
+    try:
+        response = await call_next(request)
+        return response
+    finally:
+        duration_ms = (time.perf_counter() - start) * 1000
+        logger.info(
+            "request %s %s status=%s duration_ms=%.2f",
+            request.method,
+            request.url.path,
+            getattr(response, "status_code", "-"),
+            duration_ms,
+        )
 
 # Include API routers
 app.include_router(quiz_router, prefix="/api")
@@ -66,6 +100,7 @@ async def health_check():
             "version": settings.api_version
         }
     except Exception as e:
+        logger.exception("Health check failed: %s", e)
         raise HTTPException(status_code=503, detail=f"Service unhealthy: {str(e)}")
 
 
