@@ -29,6 +29,10 @@ This will automatically:
 - Redis: localhost:6379
 - LocalStack (S3): http://localhost:4566
 
+## Database UML schema
+
+![plantuml (1)](https://github.com/user-attachments/assets/e560cc52-1257-4869-b3b7-3d57f1e30c44)
+
 ## Environment variables
 The app is configured via `app/config.py` (Pydantic settings) and Compose envs.
 
