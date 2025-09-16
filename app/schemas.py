@@ -119,6 +119,7 @@ class QuestionStatsResponse(BaseSchema):
     total_correct: int
     correctness_rate: float = Field(..., description="Percentage of correct answers")
     updated_at: Optional[datetime] = None
+    dropoff_rate_unsubmitted_percent: Optional[float] = None
 
     @classmethod
     def from_orm_with_rate(cls, stats):
@@ -136,7 +137,9 @@ class QuestionStatsResponse(BaseSchema):
 class QuizStatsResponse(BaseSchema):
     quiz_id: uuid.UUID
     total_submissions: int
+    total_unsubmitted_attempts: Optional[int] = None
     avg_score: float
+    completion_rate: Optional[float] = None
     question_stats: List[QuestionStatsResponse] = []
     updated_at: Optional[datetime] = None
 

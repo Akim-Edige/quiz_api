@@ -275,6 +275,14 @@ class QuizService:
             .where(__import__('app.models').models.Attempt.submitted_at.is_not(None))
         )).scalar_one() or 0
         
+        # Total attempts started (including unsubmitted)
+        total_started = (await session.execute(
+            select(func.count()).select_from(__import__('app.models').models.Attempt)
+            .where(__import__('app.models').models.Attempt.quiz_id == quiz_id)
+        )).scalar_one() or 0
+        completion_rate = float(round(((total_submissions / total_started) * 100.0) if total_started > 0 else 0.0, 2))
+        total_unsubmitted_attempts = max(total_started - total_submissions, 0)
+        
         # Average score across attempts as percent of total questions
         # Get per-attempt correct counts (including 0 for attempts with no correct answers)
         Attempt = __import__('app.models').models.Attempt
@@ -312,9 +320,11 @@ class QuizService:
         
         # Per-question stats from answers on submitted attempts
         question_rows = (await session.execute(
-            select(Question.id).where(Question.quiz_id == quiz_id)
-        )).scalars().all()
-        question_ids = list(question_rows)
+            select(Question.id, Question.display_order).where(Question.quiz_id == quiz_id)
+        )).all()
+        question_ids = [row[0] for row in question_rows]
+        id_to_order = {row[0]: int(row[1] or 0) for row in question_rows}
+        first_question_id = min(question_ids, key=lambda q: id_to_order.get(q, 0)) if question_ids else None
         question_stats_list = []
         if question_ids:
             qa_counts = (await session.execute(
@@ -329,7 +339,7 @@ class QuizService:
                 .group_by(AttemptAnswer.question_id)
             )).all()
             by_q = {row[0]: (int(row[1] or 0), int(row[2] or 0)) for row in qa_counts}
-            # latest answered_at per question
+            # latest answered_at per question among submitted attempts
             latest_answered = (await session.execute(
                 select(AttemptAnswer.question_id, func.max(AttemptAnswer.answered_at))
                 .select_from(AttemptAnswer)
@@ -346,26 +356,71 @@ class QuizService:
                 .where(QuestionStats.question_id.in_(question_ids))
             )).all()
             stored_updated_by_q = {row[0]: row[1] for row in stored_qstats}
-            
+
+            # Dropoff analysis for unsubmitted attempts: find their last answered question (or none)
+            unsubmitted_attempt_ids = (await session.execute(
+                select(Attempt.id)
+                .where(Attempt.quiz_id == quiz_id)
+                .where(Attempt.submitted_at.is_(None))
+            )).scalars().all()
+            dropoff_by_qid: dict[uuid.UUID, int] = {}
+            total_unsubmitted = 0
+            if unsubmitted_attempt_ids:
+                total_unsubmitted = len(unsubmitted_attempt_ids)
+                # Fetch all answers for these attempts
+                ua_rows = (await session.execute(
+                    select(AttemptAnswer.attempt_id, AttemptAnswer.question_id, AttemptAnswer.answered_at)
+                    .where(AttemptAnswer.attempt_id.in_(unsubmitted_attempt_ids))
+                )).all()
+                # Group by attempt and pick the latest answer; break ties by highest display_order
+                from collections import defaultdict
+                by_attempt: dict[uuid.UUID, list[tuple[uuid.UUID, Any]]] = defaultdict(list)
+                for aid, qid, ts in ua_rows:
+                    by_attempt[aid].append((qid, ts))
+                attempts_with_answers: set[uuid.UUID] = set()
+                for aid, items in by_attempt.items():
+                    if not items:
+                        continue
+                    attempts_with_answers.add(aid)
+                    # Find max timestamp
+                    max_ts = max(ts for (_, ts) in items if ts is not None)
+                    # Candidates with max_ts
+                    candidates = [qid for (qid, ts) in items if ts == max_ts and qid in id_to_order]
+                    if not candidates:
+                        continue
+                    # Choose the candidate with highest display_order (latest in flow)
+                    last_qid = max(candidates, key=lambda q: id_to_order.get(q, 0))
+                    dropoff_by_qid[last_qid] = dropoff_by_qid.get(last_qid, 0) + 1
+                # Attempts with zero answers count as dropping at the first question
+                zero_answer_count = total_unsubmitted - len(attempts_with_answers)
+                if zero_answer_count > 0 and first_question_id is not None:
+                    dropoff_by_qid[first_question_id] = dropoff_by_qid.get(first_question_id, 0) + zero_answer_count
+
             for qid in question_ids:
                 total = by_q.get(qid, (0, 0))[0]
                 correct = by_q.get(qid, (0, 0))[1]
                 rate = round((correct / total * 100.0) if total > 0 else 0.0, 2)
                 q_updated = stored_updated_by_q.get(qid) or latest_by_q.get(qid)
+                dropoff = None
+                if total_unsubmitted and total_unsubmitted > 0:
+                    dropoff = round((dropoff_by_qid.get(qid, 0) / total_unsubmitted) * 100.0, 2)
                 question_stats_list.append({
                     "question_id": str(qid),
                     "total_attempts": total,
                     "total_correct": correct,
                     "correctness_rate": rate,
-                    "updated_at": q_updated
+                    "updated_at": q_updated,
+                    "dropoff_rate_unsubmitted_percent": dropoff
                 })
         
         quiz_stats_data = QuizStatsResponse(
             quiz_id=quiz_id,
             total_submissions=total_submissions,
             avg_score=round(float(avg_score), 2),
+            completion_rate=completion_rate,
             question_stats=question_stats_list,
-            updated_at=quiz_updated_at
+            updated_at=quiz_updated_at,
+            total_unsubmitted_attempts=total_unsubmitted_attempts
         )
         
         # Cache the result

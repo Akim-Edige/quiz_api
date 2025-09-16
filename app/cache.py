@@ -78,8 +78,9 @@ class CacheService:
         return f"quiz:{settings.quiz_payload_version}:{quiz_id}:{locale}"
     
     def get_quiz_stats_cache_key(self, quiz_id: str) -> str:
-        """Generate cache key for quiz stats"""
-        return f"quiz:stats:{quiz_id}"
+        """Generate cache key for quiz stats (versioned)"""
+        from app.config import settings
+        return f"quiz:stats:{settings.quiz_stats_version}:{quiz_id}"
     
     async def get_cached_quiz(self, quiz_id: str, locale: str) -> Optional[Dict[str, Any]]:
         """Get cached quiz content for specific locale"""
@@ -108,6 +109,13 @@ class CacheService:
         """Cache quiz statistics"""
         key = self.get_quiz_stats_cache_key(quiz_id)
         return await self.set(key, stats_data, settings.stats_cache_ttl)
+
+    async def invalidate_quiz_stats_cache(self, quiz_id: str) -> int:
+        """Invalidate all cached versions of quiz stats"""
+        deleted = 0
+        deleted += await self.delete_pattern(f"quiz:stats:{quiz_id}")
+        deleted += await self.delete_pattern(f"quiz:stats:*:{quiz_id}")
+        return deleted
 
 
 # Global cache instance
