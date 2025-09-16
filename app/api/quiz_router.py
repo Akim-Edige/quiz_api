@@ -118,13 +118,12 @@ async def get_quiz_by_slug(
 ):
     """
     Get quiz content by slug.
-    
-    This is a convenience endpoint for more user-friendly URLs.
-    Internally converts slug to ID and uses the same optimization.
+    Resolves slug to quiz ID and returns the same payload as the ID endpoint.
     """
-    # This would need a method in quiz_service to fetch by slug
-    # For now, return a placeholder response
-    raise HTTPException(
-        status_code=501,
-        detail="Get by slug not yet implemented"
-    ) 
+    quiz = await quiz_service.get_quiz_by_slug(db, slug, locale)
+    if not quiz:
+        raise HTTPException(
+            status_code=404,
+            detail=f"Quiz with slug '{slug}' not found"
+        )
+    return quiz 

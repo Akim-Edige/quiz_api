@@ -1,283 +1,177 @@
 # Finelo Quiz API
 
-A production-ready, read-optimized quiz service built with FastAPI, supporting multi-language content, various question types (single/multi choice, fill-in-the-gap, image↔text matching), and designed for horizontal scalability.
+Production-ready Quiz API service with multi-language support, optimized for read-heavy workloads with caching and CDN integration.
 
-## 🏗️ Architecture Overview
+## Quick Start (Docker)
 
-This implementation follows the production-minded design you provided:
+Prerequisites:
+- Docker + Docker Compose
 
-- **Read-optimized**: Separate read/write paths with read replicas and Redis caching
-- **Multi-language**: Full i18n support with fallbacks
-- **Scalable**: Designed for 2M+ active users with caching and CDN integration
-- **Question Types**: Single choice, multi-choice, fill-in-the-gap, and image↔text matching
-- **Media Support**: S3 integration with CDN and presigned URLs
-
-### Core Components
-
-- **Quiz API**: Read-heavy service for quiz content delivery
-- **PostgreSQL**: Primary database with read replicas
-- **Redis**: Caching layer for quiz content and stats
-- **S3 + CDN**: Media asset storage and delivery
-- **FastAPI**: High-performance async web framework
-
-## 🚀 Quick Start
-
-### Prerequisites
-
-- Python 3.11+
-- PostgreSQL 15+
-- Redis 7+
-- Docker & Docker Compose (recommended)
-
-### Option 1: Docker Compose (Recommended)
+One command to build and run locally (auto-migrations, S3 bootstrap, and seeding included):
 
 ```bash
-# Clone and navigate to project
-cd Zimran_assignment
-
-# Copy environment configuration
-cp .env.example .env
-
-# Start all services
-docker-compose up -d
-
-# Run database migrations
-docker-compose exec app alembic upgrade head
-
-# The API will be available at http://localhost:8000
+docker compose up --build -d
 ```
 
-### Option 2: Local Development
+Then visit:
+- API Docs: http://localhost:8000/docs
+- Health: http://localhost:8000/health
 
+This will automatically:
+- Wait for Postgres
+- Run Alembic migrations
+- Initialize LocalStack S3 bucket `finelo-quiz-assets` with CORS and upload flag images
+- Seed the database with a sample quiz including matching question with flag images
+
+## Services
+- App (FastAPI): http://localhost:8000
+- Postgres: localhost:5432
+- Redis: localhost:6379
+- LocalStack (S3): http://localhost:4566
+
+## Environment variables
+The app is configured via `app/config.py` (Pydantic settings) and Compose envs.
+
+Key variables (with local defaults in `docker-compose.yml`):
+- `DATABASE_URL`: asyncpg DSN to Postgres
+- `DATABASE_READ_REPLICA_URL`: optional read-replica DSN; if missing/placeholder, primary is used
+- `REDIS_URL`: Redis connection URL
+- `LOG_LEVEL`: INFO/DEBUG/etc
+- `AWS_REGION`: us-east-1
+- `S3_BUCKET`: finelo-quiz-assets
+- `AWS_ENDPOINT_URL`: http://localstack:4566 (for LocalStack)
+- `CDN_DOMAIN`: when set, asset URLs will use this domain. In local it’s set to `http://localhost:4566/finelo-quiz-assets/`
+- `INIT_S3_ON_START`: 1/0 to run S3 bootstrap script at container start
+- `SEED_ON_START`: 1/0 to run seeding at container start
+
+## Logging
+- Centralized logging with level from `LOG_LEVEL`
+- HTTP request logging middleware included
+- Key logs in cache, services and S3 utils for visibility (cache hits/misses, evaluation, URL resolution)
+
+## Endpoints
+All endpoints are prefixed with `/api`.
+
+### Quizzes
+
+- GET `/api/quizzes/{quiz_id}`
+  - Description: Get complete quiz content for a locale (cached).
+  - Query params:
+    - `locale` (string, default `en`): language code.
+  - Response: `LocalizedQuizResponse` with questions.
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Set up environment
-cp .env.example .env
-# Edit .env with your database and Redis URLs
-
-# Run database migrations
-alembic upgrade head
-
-# Start the application
-uvicorn main:app --reload
-
-# API available at http://localhost:8000
+curl "http://localhost:8000/api/quizzes/<quiz_id>?locale=en"
 ```
 
-## 📊 Database Schema
-
-The database implements your comprehensive PostgreSQL schema with:
-
-- **Quiz Management**: `quiz`, `quiz_i18n` tables
-- **Questions**: `question`, `question_i18n` with support for 4 question types
-- **Choice Options**: `choice_option`, `choice_option_i18n`
-- **Fill-in-the-Gap**: `fill_gap`, `fill_gap_answer`
-- **Matching**: `matching_pair` with text/image support
-- **Media Assets**: `media_asset`, `media_asset_i18n`
-- **Statistics**: `question_stats`, `quiz_stats`
-
-### Supported Question Types
-
-1. **Single Choice**: One correct answer from multiple options
-2. **Multi Choice**: Multiple correct answers from options
-3. **Fill-in-the-Gap**: Text input with multiple accepted answers
-4. **Matching**: Pair text/images (supports all combinations)
-
-## 🔌 API Endpoints
-
-### Quiz Content
-
-```http
-GET /api/quizzes/{quiz_id}?locale=en
-```
-Get complete quiz content optimized for a specific locale.
-
-**Features:**
-- Cached responses (1-hour TTL)
-- Read replica queries
-- CDN URLs for images
-- Localized content with fallbacks
-
-### Quiz Statistics
-
-```http
-GET /api/quizzes/{quiz_id}/stats
-```
-Get quiz performance statistics for "compare to others" features.
-
-**Returns:**
-- Overall submission stats
-- Per-question correctness rates
-- Data for percentile calculations
-
-### Quiz Listing
-
-```http
-GET /api/quizzes?page=1&size=20&locale=en
-```
-Paginated list of published quizzes with localized metadata.
-
-## 🎯 Read Optimization Strategy
-
-### Caching Layer
-
-- **Quiz Content**: Assembled blobs cached by `(quiz_id, locale)`
-- **Statistics**: Question/quiz stats cached with 5-minute TTL
-- **Cache Keys**: `quiz:{id}:{locale}`, `quiz:stats:{id}`
-
-### Database Optimization
-
-- **Read Replicas**: All GET requests use read replicas
-- **Eager Loading**: Single queries with `selectinload` for related data
-- **Indexes**: Optimized for quiz→questions→options traversal
-
-### Media Assets
-
-- **CDN Integration**: Public assets served via CDN
-- **Presigned URLs**: Private assets get short-lived S3 URLs
-- **Image Metadata**: Width, height, MIME type included
-
-## 🌍 Multi-Language Support
-
-### Supported Locales
-
-- English (en) - Default/fallback
-- Spanish (es)
-- Portuguese (pt)
-- German (de)
-- Turkish (tr)
-- French (fr)
-- Italian (it)
-- Filipino (fil)
-- Japanese (ja)
-
-### Fallback Strategy
-
-1. Try exact locale match
-2. Fallback to English (`en`)
-3. Use first available if no English
-
-## 📝 Example Quiz Response
-
-```json
-{
-  "id": "123e4567-e89b-12d3-a456-426614174000",
-  "slug": "general-knowledge-quiz",
-  "title": "General Knowledge Quiz",
-  "description": "Test your general knowledge",
-  "locale": "en",
-  "questions": [
-    {
-      "id": "789e4567-e89b-12d3-a456-426614174001",
-      "qtype": "single_choice",
-      "display_order": 1,
-      "points": 100,
-      "prompt": "What is the capital of France?",
-      "explanation": "Paris is the capital and most populous city of France.",
-      "choice_options": [
-        {
-          "id": "option1",
-          "label": "London",
-          "display_order": 1
-        },
-        {
-          "id": "option2", 
-          "label": "Paris",
-          "display_order": 2
-        }
-      ]
-    }
-  ]
-}
+- GET `/api/quizzes/slug/{slug}`
+  - Description: Get quiz content by slug. Same payload as the ID-based endpoint.
+  - Query params: `locale` (string, default `en`)
+```bash
+curl "http://localhost:8000/api/quizzes/slug/general-knowledge-quiz?locale=en"
 ```
 
-## 🔧 Configuration
-
-### Environment Variables
-
-| Variable | Description | Default |
-|----------|-------------|---------|
-| `DATABASE_URL` | Primary database connection | `postgresql+asyncpg://...` |
-| `DATABASE_READ_REPLICA_URL` | Read replica connection | Same as primary |
-| `REDIS_URL` | Redis connection | `redis://localhost:6379/0` |
-| `AWS_ACCESS_KEY_ID` | S3 access key | - |
-| `AWS_SECRET_ACCESS_KEY` | S3 secret key | - |
-| `S3_BUCKET` | S3 bucket for assets | `finelo-quiz-assets` |
-| `CDN_DOMAIN` | CDN domain for assets | - |
-| `QUIZ_CACHE_TTL` | Quiz cache TTL (seconds) | `3600` |
-| `STATS_CACHE_TTL` | Stats cache TTL (seconds) | `300` |
-
-## 🚀 Deployment
-
-### Production Checklist
-
-- [ ] Configure read replicas
-- [ ] Set up Redis cluster
-- [ ] Configure S3 bucket and CDN
-- [ ] Set up monitoring and logging
-- [ ] Configure CORS for your frontend domain
-- [ ] Set appropriate cache TTLs
-- [ ] Enable connection pooling
-
-### Health Checks
-
-```http
-GET /health
+- GET `/api/quizzes/{quiz_id}/stats`
+  - Description: Get quiz statistics for comparison features (cached briefly).
+  - Response: `QuizStatsResponse` with per-question correctness and averages.
+```bash
+curl "http://localhost:8000/api/quizzes/<quiz_id>/stats"
 ```
 
-Returns service status including cache and database connectivity.
-
-## 🧪 Testing
-
-The API includes comprehensive HTTP tests in `test_main.http`:
-
-```http
-### Get quiz content
-GET http://127.0.0.1:8000/api/quizzes/{quiz_id}?locale=en
-
-### Get quiz statistics  
-GET http://127.0.0.1:8000/api/quizzes/{quiz_id}/stats
-
-### List quizzes
-GET http://127.0.0.1:8000/api/quizzes?page=1&size=10&locale=en
+- GET `/api/quizzes`
+  - Description: List published quizzes with pagination and localized titles.
+  - Query params:
+    - `page` (int, default 1)
+    - `size` (int, default 20, max 100)
+    - `locale` (string, default `en`)
+```bash
+curl "http://localhost:8000/api/quizzes?page=1&size=20&locale=en"
 ```
 
-## 📈 Performance Targets
+### Attempts
+All attempts endpoints require the header `x-user-id: <UUID>`.
 
-Based on your 2M+ active users requirement:
+- POST `/api/attempts`
+  - Description: Create a new attempt for a quiz.
+  - Headers: `x-user-id` (UUID)
+  - Body: `CreateAttemptRequest`
+    - `quiz_id` (UUID)
+    - `locale` (optional, default `en`)
+  - Response: `CreateAttemptResponse` with `attempt_id`, `started_at`.
+```bash
+curl -X POST http://localhost:8000/api/attempts \
+  -H 'Content-Type: application/json' \
+  -H 'x-user-id: 00000000-0000-0000-0000-000000000001' \
+  -d '{"quiz_id":"<quiz_uuid>","locale":"en"}'
+```
 
-- **Read Latency**: P95 < 120ms (with cache)
-- **Cache Hit Rate**: >90% for quiz content
-- **Database Connections**: Pooled with 20-30 connections
-- **Memory Usage**: ~500MB per service instance
+- POST `/api/attempts/{attempt_id}/answers`
+  - Description: Submit an answer for a question within an attempt. Returns correctness and question stats.
+  - Headers: `x-user-id` (UUID)
+  - Body: `SubmitAnswerRequest`
+    - For single/multi choice: `{ "question_id": "...", "answer": { "option_ids": ["..."] } }`
+    - For fill gap: `{ "question_id": "...", "answer": { "gaps": { "<gap_id>": "value" } } }`
+    - For matching: `{ "question_id": "...", "answer": { "pairs": [ {"left_id": "...", "right_id": "..."}, ... ] } }`
+  - Response: `SubmitAnswerWithStatsResponse`
+```bash
+curl -X POST http://localhost:8000/api/attempts/<attempt_id>/answers \
+  -H 'Content-Type: application/json' \
+  -H 'x-user-id: 00000000-0000-0000-0000-000000000001' \
+  -d '{"question_id":"<question_uuid>","answer":{"pairs":[{"left_id":"<L_id>","right_id":"<R_id>"}]}}'
+```
 
-## 🔮 Future Extensions
+- POST `/api/attempts/{attempt_id}/submit`
+  - Description: Submit the attempt; computes final score, awards, and updates stats.
+  - Headers: `x-user-id` (UUID)
+  - Response: `SubmitAttemptResponse` with totals, score, award, average score.
+```bash
+curl -X POST http://localhost:8000/api/attempts/<attempt_id>/submit \
+  -H 'x-user-id: 00000000-0000-0000-0000-000000000001'
+```
 
-This foundation supports your complete architecture:
+- GET `/api/attempts/me`
+  - Description: List my attempts with pagination and summary info.
+  - Headers: `x-user-id` (UUID)
+  - Query params: `page`, `size`
+  - Response: `PaginatedAttemptsResponse`
+```bash
+curl "http://localhost:8000/api/attempts/me?page=1&size=20" -H 'x-user-id: 00000000-0000-0000-0000-000000000001'
+```
 
-1. **Attempts API**: For answer submission and validation
-2. **Balance API**: For currency awards and ledger
-3. **Stats Aggregator**: For real-time statistics updates
-4. **Event Bus**: For async processing (Kafka/SNS)
-5. **Analytics**: ClickHouse for advanced reporting
+- GET `/api/attempts/me/balance`
+  - Description: Get my total award balance and recent ledger entries.
+  - Headers: `x-user-id` (UUID)
+  - Response: `BalanceResponse`
+```bash
+curl http://localhost:8000/api/attempts/me/balance -H 'x-user-id: 00000000-0000-0000-0000-000000000001'
+```
 
-## 📚 API Documentation
+## Development
+Rebuild after code changes:
+```bash
+docker compose up --build -d app
+```
+Tail logs:
+```bash
+docker compose logs -f app
+```
 
-Once running, visit:
-- **Interactive Docs**: http://localhost:8000/docs
-- **ReDoc**: http://localhost:8000/redoc
+Re-run S3 bootstrap (if needed):
+```bash
+docker compose exec app python scripts/bootstrap_s3_local.py
+```
 
-## 🤝 Contributing
+Re-run seeding:
+```bash
+docker compose exec app python seed_runner.py
+```
 
-This implementation follows your production architecture design. The codebase is structured for:
+## Notes
+- Local assets are uploaded to LocalStack S3 and served via the configured `CDN_DOMAIN`.
+- In production, point `CDN_DOMAIN` to your CDN (e.g., CloudFront) with S3 as origin; the API will return CDN URLs.
+- The matching question uses opaque IDs and returns left image items (flags) and right text items (capitals).
 
-- Clean separation of concerns
-- Easy testing and deployment
-- Horizontal scalability
-- Multi-service architecture evolution
-
----
-
-Built with ❤️ following your comprehensive production design for scalable quiz services. 
+## Tests
+Run the basic validation test locally (optional):
+```bash
+python test_basic.py
+``` 

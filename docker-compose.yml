@@ -7,14 +7,23 @@ services:
       - "8000:8000"
     environment:
       - DATABASE_URL=postgresql+asyncpg://postgres:password@db:5432/finelo_quiz
+      - DATABASE_READ_REPLICA_URL=
       - REDIS_URL=redis://redis:6379/0
       - DEBUG=true
+      - LOG_LEVEL=INFO
+      - AWS_REGION=us-east-1
+      - S3_BUCKET=finelo-quiz-assets
+      - AWS_ENDPOINT_URL=http://localstack:4566
+      - CDN_DOMAIN=http://localhost:4566/finelo-quiz-assets/
+      - INIT_S3_ON_START=1
+      - SEED_ON_START=1
     depends_on:
       - db
       - redis
+      - localstack
     volumes:
       - .:/app
-    command: uvicorn main:app --host 0.0.0.0 --port 8000 --reload
+    entrypoint: ["/bin/bash", "-lc", "chmod +x docker-entrypoint.sh && ./docker-entrypoint.sh"]
 
   db:
     image: postgres:15

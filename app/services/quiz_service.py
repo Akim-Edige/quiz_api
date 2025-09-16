@@ -51,6 +51,20 @@ class QuizService:
         
         return quiz_data
     
+    async def get_quiz_by_slug(
+        self,
+        session: AsyncSession,
+        slug: str,
+        locale: str = "en"
+    ) -> Optional[LocalizedQuizResponse]:
+        """Resolve quiz by slug, then reuse the ID-based flow (with caching)."""
+        row = await session.execute(select(Quiz.id).where(Quiz.slug == slug))
+        quiz_id = row.scalar_one_or_none()
+        if not quiz_id:
+            logger.warning("Quiz not found slug=%s", slug)
+            return None
+        return await self.get_quiz_by_id(session, quiz_id, locale)
+    
     async def _fetch_quiz_from_db(
         self, 
         session: AsyncSession, 
